@@ -1,0 +1,15 @@
+galaxy_info:
+  author: MikySal78
+  description: Installazione dei pacchetti di base, configurazione ssh, personalizzazione del banner
+  license: BSD
+  min_ansible_version: 2.8
+  platforms:
+    - name: Debian
+      versions:
+        - jessie
+        - stretch
+  galaxy_tags:
+    - system
+    - common
+    - ninux
+dependencies: []
