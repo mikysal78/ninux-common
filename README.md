@@ -37,13 +37,17 @@ Role Variables
 Example Playbook
 ----------------
 
+Scarica il playbook via Ansible Galaxy
+```
+ansible-galaxy install mikysal78.ninux_common
+```
 Un esempio del playbook è questo (hosts puà essere anche impostato su common o solo su locale (vedi il tuo file inventory (hosts):
 
 ```Yaml
 - hosts: all
   become: "{{ sudo | default('yes') }}"
   roles:
-    - common
+    - mikysal78.ninux_common
   vars:
     # common
     common_ipv4_forward: 1
