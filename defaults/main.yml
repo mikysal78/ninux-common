@@ -1,6 +1,5 @@
 ---
 # defaults file for ninux-common
----
 common_ipv4_forward : 0
 common_ssh_port: 2400
 
