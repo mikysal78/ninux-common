@@ -24,3 +24,6 @@ packages:
   - net-tools
   - screenfetch
   - ncdu
+  - python-pip
+  - python3-pip
+  - libpq-dev
