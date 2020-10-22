@@ -1,4 +1,5 @@
 galaxy_info:
+  role_name: ninux.common
   author: MikySal78
   description: Installazione dei pacchetti di base, configurazione ssh, personalizzazione del banner
   license: BSD
