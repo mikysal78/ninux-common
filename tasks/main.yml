@@ -131,6 +131,15 @@
   when: hostname_contents.changed
   tags: hostname
 
+- name: create fake 'sysctl.conf'
+  file: path=/etc/sysctl.d/sysctl.conf state=touch owner=root group=root mode=0655
+
+- name: Create symbolic link sysctl.conf
+  file:
+   src: "/etc/sysctl.d/custom.conf"
+   dest: "/etc/sysctl.conf"
+   state: link
+  
 - name: Enable/Disable ipv4 forwarding
   lineinfile:
     dest: /etc/sysctl.conf
