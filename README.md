@@ -68,11 +68,7 @@ Le parti specifiche per distribuzione sono gestite automaticamente:
 ## Requisiti
 
 - **Ansible** ≥ 2.14 sul nodo di controllo.
-- Collection **`ansible.posix`** (moduli `authorized_key` e `sysctl`):
-
-```bash
-ansible-galaxy collection install ansible.posix
-```
+- **Nessuna collection esterna**: il ruolo usa solo moduli `ansible.builtin`.
 
 Sul target è sufficiente un'installazione standard di Debian/Ubuntu con accesso
 SSH come root (o un utente con `become`).
@@ -91,8 +87,6 @@ Oppure con un file `requirements.yml`:
 
 ```yaml
 ---
-collections:
-  - name: ansible.posix
 roles:
   - name: mikysal78.ninux_common
     src: https://github.com/mikysal78/ninux-common.git

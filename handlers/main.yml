@@ -12,3 +12,12 @@
   ansible.builtin.service:
     name: fail2ban
     state: restarted
+
+- name: Reload sysctl
+  ansible.builtin.command: sysctl -p /etc/sysctl.d/99-ninux.conf
+  changed_when: true
+
+# hostname(1) avoids hostnamectl/D-Bus, so it also works inside containers.
+- name: Apply hostname
+  ansible.builtin.command: "hostname {{ inventory_hostname }}"  # noqa: command-instead-of-module
+  changed_when: true

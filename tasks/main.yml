@@ -119,15 +119,31 @@
     append: true
     state: present
   loop: "{{ users }}"
+  register: created_users
   tags: users
 
-- name: Add authorized SSH keys for users
-  ansible.posix.authorized_key:
-    user: "{{ item.0.name }}"
-    key: "{{ item.1 }}"
-  with_subelements:
-    - "{{ users }}"
-    - authorized
+- name: Ensure ~/.ssh exists
+  ansible.builtin.file:
+    path: "{{ item.home }}/.ssh"
+    state: directory
+    owner: "{{ item.name }}"
+    mode: '0700'
+  loop: "{{ created_users.results }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: users
+
+# authorized_keys is managed declaratively (the playbook is the source of
+# truth): keys not listed under the user's "authorized" will be removed.
+- name: Deploy authorized_keys
+  ansible.builtin.template:
+    src: authorized_keys.j2
+    dest: "{{ item.home }}/.ssh/authorized_keys"
+    owner: "{{ item.name }}"
+    mode: '0600'
+  loop: "{{ created_users.results }}"
+  loop_control:
+    label: "{{ item.name }}"
   tags: users
 
 - name: Allow sudo groups (passwordless) via sudoers drop-in
@@ -192,7 +208,7 @@
 # port is defined by the socket, NOT by sshd_config, so our Port would be ignored.
 # Switch to the classic service. On Debian there is no ssh.socket -> tasks skip.
 - name: Check whether ssh.socket exists
-  ansible.builtin.command: systemctl cat ssh.socket
+  ansible.builtin.command: systemctl cat ssh.socket  # noqa: command-instead-of-module
   register: ssh_socket_unit
   changed_when: false
   failed_when: false
@@ -282,21 +298,26 @@
 # Existing users' ~/.bashrc were created from the OLD skel and may still call
 # "screenfetch" (or a bare "fastfetch"); normalize them to use our config.
 - name: Find dotfiles with a login fetch call
-  ansible.builtin.shell: >
-    grep -rlE '^[[:space:]]*(screenfetch|fastfetch)([[:space:]]|$)'
-    /root/.bashrc /home/*/.bashrc 2>/dev/null || true
+  ansible.builtin.find:
+    paths:
+      - /root
+      - /home
+    patterns: '.bashrc'
+    hidden: true
+    recurse: true
+    contains: '^\s*(screenfetch|fastfetch)(\s|$)'
   register: legacy_fetch_dotfiles
-  changed_when: false
-  check_mode: false
   tags: rc
 
 - name: Normalize the login fetch call in existing dotfiles
   ansible.builtin.replace:
-    path: "{{ item }}"
+    path: "{{ item.path }}"
     regexp: '^[ \t]*(screenfetch|fastfetch)([ \t].*)?$'
     replace: 'fastfetch --config /etc/fastfetch/ninux.jsonc'
-  loop: "{{ legacy_fetch_dotfiles.stdout_lines }}"
-  when: legacy_fetch_dotfiles.stdout_lines | length > 0
+  loop: "{{ legacy_fetch_dotfiles.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: legacy_fetch_dotfiles.matched | default(0) > 0
   tags: rc
 
 - name: Set system vimrc
@@ -337,15 +358,7 @@
     owner: root
     group: root
     mode: '0644'
-  register: hostname_file
-  tags: hostname
-
-# Apply at runtime without going through hostnamectl/D-Bus, so it also works
-# inside containers (LXC/chroot) where the system bus may be unavailable.
-- name: Apply hostname at runtime
-  ansible.builtin.command: "hostname {{ inventory_hostname }}"
-  when: hostname_file.changed
-  changed_when: true
+  notify: Apply hostname
   tags: hostname
 
 # ---------------------------------------------------------------------------
@@ -371,14 +384,15 @@
     - sysctl_conf.stat.lnk_target | default('') is search('custom.conf')
   tags: ipv4forward
 
-# Apply only our key (reload reads just this file, so unrelated read-only
-# kernel keys in a container don't make the whole run fail).
-- name: Enable/disable IPv4 forwarding
-  ansible.posix.sysctl:
-    name: net.ipv4.ip_forward
-    value: "{{ common_ipv4_forward }}"
-    sysctl_file: /etc/sysctl.d/99-ninux.conf
-    sysctl_set: true
-    state: present
-    reload: true
+# Write only our key into a dedicated drop-in. The handler reloads just this
+# file (sysctl -p <file>), so unrelated read-only kernel keys in a container
+# don't make the run fail.
+- name: Configure IPv4 forwarding drop-in
+  ansible.builtin.template:
+    src: sysctl-ninux.conf.j2
+    dest: /etc/sysctl.d/99-ninux.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload sysctl
   tags: ipv4forward
