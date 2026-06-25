@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Managed by the ninux-common role. Do not edit by hand: changes belong in the
+# role's defaults/inventory. Drop-in dir takes precedence over /etc/ssh/sshd_config.
+Port {{ common_ssh_port }}
+PermitRootLogin {{ common_permit_root_login }}
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AllowAgentForwarding no
+AllowTcpForwarding no
+MaxAuthTries {{ common_ssh_max_auth_tries }}
+MaxSessions {{ common_ssh_max_sessions }}
+TCPKeepAlive no
+UseDNS no
+{% if common_ssh_deny_users %}
+DenyUsers {{ common_ssh_deny_users | join(' ') }}
+{% endif %}

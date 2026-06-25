@@ -1,0 +1,26 @@
+// Ninux fastfetch config - shown at login (called from /etc/bash.bashrc).
+// Managed by the ninux-common Ansible role.
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+  // type "builtin" = sempre arte ASCII (no protocolli immagine su SSH).
+  // Senza "source" il logo della distro viene rilevato in automatico:
+  // Debian su Debian, Ubuntu su Ubuntu, ecc.
+  "logo": { "type": "builtin" },
+  "modules": [
+    // host con dominio (user@FQDN)
+    { "type": "title", "fqdn": true },
+    "separator",
+    "os",
+    "kernel",
+    "uptime",
+    "packages",
+    "shell",
+    "memory",
+    "swap",
+    { "type": "disk", "folders": ["/"] },
+    // Local IP dell'interfaccia di default (es. eth0), IPv4 + IPv6.
+    // Se l'IPv6 non compare, la default route v6 e' su un'altra iface:
+    // mettere "defaultRouteOnly": false e "namePrefix": "eth0".
+    { "type": "localip", "showIpv6": true }
+  ]
+}

@@ -1,5 +1,6 @@
 ---
 # vars file for ninux-common
+# Package names verified against Debian 13 (Trixie).
 packages:
   - sudo
   - aptitude
@@ -8,17 +9,21 @@ packages:
   - nyancat
   - screen
   - unattended-upgrades
+  - fail2ban            # was referenced by a handler but never installed
   - vim
   - wget
   - whois
   - iputils-ping
-  - host
+  - bind9-dnsutils      # provides "host" and "dig" (there is no apt pkg "host")
   - traceroute
   - tree
   - build-essential
-  - apt-transport-https
   - net-tools
-  - screenfetch
   - ncdu
   - python3-pip
+  - python3-venv        # PEP 668: system pip is externally-managed on Trixie
   - libpq-dev
+
+# Packages to purge if present (e.g. left over from older provisioning).
+obsolete_packages:
+  - screenfetch

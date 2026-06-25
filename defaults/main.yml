@@ -1,9 +1,18 @@
 ---
 # defaults file for ninux-common
-common_ipv4_forward : 0
+common_ipv4_forward: 0
 common_ssh_port: 2400
 
-#sudoers
+# --- SSH hardening (all overridable per host/group) -------------------------
+# prohibit-password = root may log in by key only (passwords already disabled).
+# Set to "no" to forbid root SSH entirely, or "yes" for the old behaviour.
+common_permit_root_login: "prohibit-password"
+common_ssh_max_auth_tries: 3
+common_ssh_max_sessions: 4
+common_ssh_deny_users:
+  - ubuntu
+
+# --- sudoers ----------------------------------------------------------------
 base_svr_groups:
   - name: michele
     groupid: 30000

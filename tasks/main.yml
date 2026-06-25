@@ -1,152 +1,384 @@
 ---
 # tasks file for ninux-common
-# apt
+# Updated for Debian 13 "Trixie" (OpenSSH 10.x, sshd_config.d drop-ins,
+# ssh.service, fastfetch). Modern Ansible syntax (FQCN + loop + handlers).
+
+# ---------------------------------------------------------------------------
+# APT
+# ---------------------------------------------------------------------------
 - name: Update APT package cache
-  apt: update_cache=yes
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
   tags: apt
 
-# Because there is no RAID device within a VM, unless you setup RAID, we can disable the mpt-statusd
-- name: Check "mpt-statusd" package installation
-  command: dpkg -s mpt-status
-  changed_when: False
-  failed_when: False
+# Legacy: on bare-metal RAID controllers mpt-statusd polls the HBA; useless
+# (and noisy) on VMs. Kept as a defensive no-op for old hosts.
+- name: Check if "mpt-status" is installed
+  ansible.builtin.command: dpkg -s mpt-status
+  changed_when: false
+  failed_when: false
   register: mpt_status_installed
   tags: apt
 
 - name: Stop "mpt-statusd" service
-  service: name=mpt-statusd enabled=no state=stopped  pattern=/etc/init.d/mpt-statusd
+  ansible.builtin.service:
+    name: mpt-statusd
+    enabled: false
+    state: stopped
   when: mpt_status_installed.rc == 0
   tags: apt
 
 - name: Remove "mpt-status" package
-  apt: name=mpt-status state=absent purge=yes
+  ansible.builtin.apt:
+    name: mpt-status
+    state: absent
+    purge: true
   when: mpt_status_installed.rc == 0
   tags: apt
 
-- name: Install dependencies and basic tools
-  apt: >
-    name={{ packages }} state=latest
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ packages }}"
+    state: present
   tags: apt
 
-- name: Run apt-get upgrade
-  apt: upgrade=yes
+# fastfetch is only in the repos on Debian >= 13 and Ubuntu >= 25.04.
+# Elsewhere (Debian 12, Ubuntu 22.04/24.04, ...) fall back to the GitHub .deb.
+- name: Decide how to install fastfetch
+  ansible.builtin.set_fact:
+    fastfetch_in_repo: >-
+      {{ (ansible_distribution == 'Debian' and
+          ansible_distribution_major_version | int >= 13)
+         or
+         (ansible_distribution == 'Ubuntu' and
+          ansible_distribution_version is version('25.04', '>=')) }}
   tags: apt
 
-# users
+- name: Install fastfetch from the distro repository
+  ansible.builtin.apt:
+    name: fastfetch
+    state: present
+  when: fastfetch_in_repo | bool
+  tags: apt
+
+- name: Check if fastfetch is already installed
+  ansible.builtin.command: dpkg-query -W -f='${Status}' fastfetch
+  register: fastfetch_pkg
+  changed_when: false
+  failed_when: false
+  when: not (fastfetch_in_repo | bool)
+  tags: apt
+
+- name: Install fastfetch from the GitHub .deb (older Debian/Ubuntu)
+  when:
+    - not (fastfetch_in_repo | bool)
+    - "'install ok installed' not in (fastfetch_pkg.stdout | default(''))"
+  tags: apt
+  block:
+    - name: Map architecture to the fastfetch .deb asset
+      ansible.builtin.set_fact:
+        fastfetch_arch: "{{ {'x86_64': 'amd64'}.get(ansible_architecture, ansible_architecture) }}"
+
+    - name: Download fastfetch .deb
+      ansible.builtin.get_url:
+        url: "https://github.com/fastfetch-cli/fastfetch/releases/latest/download/fastfetch-linux-{{ fastfetch_arch }}.deb"
+        dest: /tmp/fastfetch.deb
+        mode: '0644'
+
+    - name: Install fastfetch .deb
+      ansible.builtin.apt:
+        deb: /tmp/fastfetch.deb
+
+    - name: Remove downloaded .deb
+      ansible.builtin.file:
+        path: /tmp/fastfetch.deb
+        state: absent
+
+- name: Remove obsolete packages
+  ansible.builtin.apt:
+    name: "{{ obsolete_packages }}"
+    state: absent
+    purge: true
+  when: obsolete_packages | length > 0
+  tags: apt
+
+- name: Run full system upgrade
+  ansible.builtin.apt:
+    upgrade: dist
+  tags: apt
+
+# ---------------------------------------------------------------------------
+# Users and SSH keys
+# ---------------------------------------------------------------------------
 - name: Add users
-  user: name={{ item.name }} shell=/bin/bash groups=sudo state=present
-  with_items: "{{ users }}"
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: /bin/bash
+    groups: sudo
+    append: true
+    state: present
+  loop: "{{ users }}"
   tags: users
 
-- name: Add ssh key for users
-  authorized_key: "user={{ item.0.name }} key='{{ lookup('file', item.1) }}'"
+- name: Add authorized SSH keys for users
+  ansible.posix.authorized_key:
+    user: "{{ item.0.name }}"
+    key: "{{ item.1 }}"
   with_subelements:
     - "{{ users }}"
     - authorized
   tags: users
 
-- name: Allow specified groups to sudo
-  template: 
+- name: Allow sudo groups (passwordless) via sudoers drop-in
+  ansible.builtin.template:
     src: sudoers.j2
-    dest: /etc/sudoers.d/sudoers
+    dest: /etc/sudoers.d/ninux
     validate: 'visudo -cf %s'
-    mode: 0440
+    owner: root
+    group: root
+    mode: '0440'
+  tags: users
 
-- name: Harden sshd configuration
-  lineinfile:
+# ---------------------------------------------------------------------------
+# SSH hardening (Trixie: use the sshd_config.d/ drop-in directory)
+# ---------------------------------------------------------------------------
+- name: Ensure sshd_config includes the drop-in directory
+  ansible.builtin.lineinfile:
     dest: /etc/ssh/sshd_config
-    regexp: "{{item.regexp}}"
-    line: "{{item.line}}"
+    line: "Include /etc/ssh/sshd_config.d/*.conf"
+    insertbefore: BOF
     state: present
-  with_items:
-    - regexp: "^#?PermitRootLogin"
-      line: "PermitRootLogin yes"
-    - regexp: "^#?PasswordAuthentication"
-      line: "PasswordAuthentication no"
-    - regexp: "^#?AllowAgentForwarding"
-      line: "AllowAgentForwarding no"
-    - regexp: "^#?AllowTcpForwarding"
-      line: "AllowTcpForwarding no"
-    - regexp: "^#?MaxAuthTries"
-      line: "MaxAuthTries 2"
-    - regexp: "^#?MaxSessions"
-      line: "MaxSessions 2"
-    - regexp: "^#?TCPKeepAlive"
-      line: "TCPKeepAlive no"
-    - regexp: "^#?UseDNS"
-      line: "UseDNS no"
-    - regexp: "^#?AllowAgentForwarding"
-      line: "AllowAgentForwarding no"
-    - regexp: "^Port 22"
-      line: "Port {{ common_ssh_port }}"
-    - regexp: "^DenyUsers"
-      line: "DenyUsers ubuntu"
+    validate: '/usr/sbin/sshd -t -f %s'
+  tags: ssh
 
-- name: Restart sshd
-  systemd:
-    state: restarted
-    daemon_reload: yes
-    name: sshd
+- name: Deploy SSH hardening drop-in
+  ansible.builtin.template:
+    src: sshd_hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/99-ninux-hardening.conf
+    owner: root
+    group: root
+    mode: '0644'
+    validate: '/usr/sbin/sshd -t -f %s'
+  notify: Restart sshd
+  tags: ssh
 
-- name: Adjust APT update intervals
-  copy: src=../files/apt_periodic dest=/etc/apt/apt.conf.d/10periodic
+# Migration: strip directives the OLD role wrote straight into the main
+# sshd_config, so the drop-in above is the single source of truth and we
+# don't end up with duplicate (e.g. "Port") lines.
+- name: Remove legacy hardening lines from main sshd_config
+  ansible.builtin.lineinfile:
+    dest: /etc/ssh/sshd_config
+    regexp: "^{{ item }}\\b"
+    state: absent
+    validate: '/usr/sbin/sshd -t -f %s'
+  loop:
+    - Port
+    - PermitRootLogin
+    - PasswordAuthentication
+    - ChallengeResponseAuthentication
+    - KbdInteractiveAuthentication
+    - AllowAgentForwarding
+    - AllowTcpForwarding
+    - MaxAuthTries
+    - MaxSessions
+    - TCPKeepAlive
+    - UseDNS
+    - DenyUsers
+  notify: Restart sshd
+  tags: ssh
+
+# Ubuntu (>= 22.10) ships sshd as socket-activated; with ssh.socket the listening
+# port is defined by the socket, NOT by sshd_config, so our Port would be ignored.
+# Switch to the classic service. On Debian there is no ssh.socket -> tasks skip.
+- name: Check whether ssh.socket exists
+  ansible.builtin.command: systemctl cat ssh.socket
+  register: ssh_socket_unit
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: ssh
+
+- name: Disable ssh socket activation (honor Port from sshd_config)
+  ansible.builtin.systemd:
+    name: ssh.socket
+    enabled: false
+    state: stopped
+  when: ssh_socket_unit.rc == 0
+  notify: Restart sshd
+  tags: ssh
+
+- name: Ensure ssh.service is enabled
+  ansible.builtin.systemd:
+    name: ssh.service
+    enabled: true
+  when: ssh_socket_unit.rc == 0
+  notify: Restart sshd
+  tags: ssh
+- name: Deploy fail2ban jail for sshd
+  ansible.builtin.template:
+    src: fail2ban_sshd.local.j2
+    dest: /etc/fail2ban/jail.d/ninux-sshd.local
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart fail2ban
   tags: security
 
-# utilities
-- name: Add screenrc for users
-  copy: src=../files/screenrc dest=/etc/screenrc
+# ---------------------------------------------------------------------------
+# Unattended upgrades
+# ---------------------------------------------------------------------------
+- name: Adjust APT periodic / unattended-upgrade intervals
+  ansible.builtin.copy:
+    src: apt_periodic
+    dest: /etc/apt/apt.conf.d/10periodic
+    owner: root
+    group: root
+    mode: '0644'
+  tags: security
+
+# ---------------------------------------------------------------------------
+# Shell / editor utilities
+# ---------------------------------------------------------------------------
+- name: Set system screenrc
+  ansible.builtin.copy:
+    src: screenrc
+    dest: /etc/screenrc
+    mode: '0644'
   tags: rc
 
 - name: Set system bashrc
-  copy: src=../files/bashrc dest=/etc/bash.bashrc
+  ansible.builtin.copy:
+    src: bashrc
+    dest: /etc/bash.bashrc
+    mode: '0644'
   tags: rc
 
 - name: Set skeleton bashrc
-  copy: src=../files/bashrc dest=/etc/skel/.bashrc
+  ansible.builtin.copy:
+    src: bashrc
+    dest: /etc/skel/.bashrc
+    mode: '0644'
   tags: rc
 
-- name: Set skeleton vimrc
-  copy: src=../files/system.vimrc dest=/etc/vim/vimrc
+- name: Ensure /etc/fastfetch exists
+  ansible.builtin.file:
+    path: /etc/fastfetch
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
   tags: rc
 
-- name: Set command update
-  copy: src=../files/up2date dest=/usr/local/bin/up2date mode=0700
+- name: Deploy fastfetch login config
+  ansible.builtin.copy:
+    src: fastfetch.jsonc
+    dest: /etc/fastfetch/ninux.jsonc
+    owner: root
+    group: root
+    mode: '0644'
+  tags: rc
+
+# Existing users' ~/.bashrc were created from the OLD skel and may still call
+# "screenfetch" (or a bare "fastfetch"); normalize them to use our config.
+- name: Find dotfiles with a login fetch call
+  ansible.builtin.shell: >
+    grep -rlE '^[[:space:]]*(screenfetch|fastfetch)([[:space:]]|$)'
+    /root/.bashrc /home/*/.bashrc 2>/dev/null || true
+  register: legacy_fetch_dotfiles
+  changed_when: false
+  check_mode: false
+  tags: rc
+
+- name: Normalize the login fetch call in existing dotfiles
+  ansible.builtin.replace:
+    path: "{{ item }}"
+    regexp: '^[ \t]*(screenfetch|fastfetch)([ \t].*)?$'
+    replace: 'fastfetch --config /etc/fastfetch/ninux.jsonc'
+  loop: "{{ legacy_fetch_dotfiles.stdout_lines }}"
+  when: legacy_fetch_dotfiles.stdout_lines | length > 0
+  tags: rc
+
+- name: Set system vimrc
+  ansible.builtin.copy:
+    src: system.vimrc
+    dest: /etc/vim/vimrc
+    mode: '0644'
+  tags: rc
+
+- name: Install up2date helper
+  ansible.builtin.copy:
+    src: up2date
+    dest: /usr/local/bin/up2date
+    mode: '0700'
   tags: update
 
-# extra
-- name: Set ssh banner
-  template: src=../templates/ssh_banner.j2 dest=/etc/motd
+# ---------------------------------------------------------------------------
+# Banner / hostname / hosts
+# ---------------------------------------------------------------------------
+- name: Set SSH login banner (motd)
+  ansible.builtin.template:
+    src: ssh_banner.j2
+    dest: /etc/motd
+    mode: '0644'
   tags: extra
 
-# hostname, FQDN
-- name: Set hosts file
-  template: src=../templates/hosts.j2 dest=/etc/hosts
+- name: Set /etc/hosts
+  ansible.builtin.template:
+    src: hosts.j2
+    dest: /etc/hosts
+    mode: '0644'
   tags: hostname
 
-- name: Set hostname
-  template: src=../templates/hostname.j2 dest=/etc/hostname
-  register: hostname_contents
-  tags: hostname
-- command: "hostname {{ inventory_hostname }}"
-  when: hostname_contents.changed
+- name: Set persistent hostname (/etc/hostname)
+  ansible.builtin.copy:
+    dest: /etc/hostname
+    content: "{{ inventory_hostname }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+  register: hostname_file
   tags: hostname
 
-- name: create fake 'sysctl.conf'
-  file: path=/etc/sysctl.d/custom.conf state=touch owner=root group=root mode=0655
+# Apply at runtime without going through hostnamectl/D-Bus, so it also works
+# inside containers (LXC/chroot) where the system bus may be unavailable.
+- name: Apply hostname at runtime
+  ansible.builtin.command: "hostname {{ inventory_hostname }}"
+  when: hostname_file.changed
+  changed_when: true
+  tags: hostname
 
-- name: Create symbolic link sysctl.conf
-  file:
-   src: "/etc/sysctl.d/custom.conf"
-   dest: "/etc/sysctl.conf"
-   state: link
-  
-- name: Enable/Disable ipv4 forwarding
-  lineinfile:
-    dest: /etc/sysctl.conf
-    regexp: "{{item.regexp}}"
-    line: "{{item.line}}"
+# ---------------------------------------------------------------------------
+# sysctl: IPv4 forwarding (managed cleanly via a drop-in, no symlink hacks)
+# ---------------------------------------------------------------------------
+# Clean up the symlink hack the old role used (/etc/sysctl.conf -> custom.conf)
+- name: Stat /etc/sysctl.conf
+  ansible.builtin.stat:
+    path: /etc/sysctl.conf
+  register: sysctl_conf
+  tags: ipv4forward
+
+- name: Remove legacy sysctl symlink/file left by the old role
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/sysctl.conf
+    - /etc/sysctl.d/custom.conf
+  when:
+    - sysctl_conf.stat.islnk is defined
+    - sysctl_conf.stat.islnk
+    - sysctl_conf.stat.lnk_target | default('') is search('custom.conf')
+  tags: ipv4forward
+
+# Apply only our key (reload reads just this file, so unrelated read-only
+# kernel keys in a container don't make the whole run fail).
+- name: Enable/disable IPv4 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "{{ common_ipv4_forward }}"
+    sysctl_file: /etc/sysctl.d/99-ninux.conf
+    sysctl_set: true
     state: present
-  with_items:
-    - regexp: "^#?net.ipv4.ip_forward=1"
-      line: "net.ipv4.ip_forward={{ common_ipv4_forward }}"
+    reload: true
   tags: ipv4forward

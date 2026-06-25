@@ -2,4 +2,4 @@
 - hosts: localhost
   remote_user: root
   roles:
-    - ninux-common
+    - mikysal78.ninux_common

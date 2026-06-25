@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[sshd]
+enabled  = true
+port     = {{ common_ssh_port }}
+backend  = systemd
+maxretry = 3
+findtime = 10m
+bantime  = 1h

@@ -1,7 +1,14 @@
 ---
 # handlers file for ninux-common
+# NB: on Debian 13 (Trixie) the canonical unit is ssh.service (sshd is an
+# alias) and "reload" is buggy, so we restart. Restarting sshd does NOT drop
+# existing SSH sessions.
 - name: Restart sshd
-  service: name=ssh state=restarted
+  ansible.builtin.service:
+    name: ssh
+    state: restarted
 
 - name: Restart fail2ban
-  service: name=fail2ban state=restarted
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted
